@@ -332,6 +332,10 @@ class DocumentProcessor:
             stats["regulators"][reg] = stats["regulators"].get(reg, 0) + 1
         
         return stats
+    
+    def get_processing_stats(self) -> Dict:
+        """Alias for get_statistics method for MCP compatibility"""
+        return self.get_statistics()
 
 def main():
     """Main function for standalone execution"""

@@ -23,11 +23,15 @@ fake-useragent==1.4.0
 sentence-transformers==2.2.2
 transformers==4.36.0
 torch==2.1.0
+langchain-huggingface
 
 # Utilities
 python-dotenv==1.0.0
 tqdm==4.66.1
 pydantic==2.5.0
+
+# MCP Servers
+mcp
 
 # Optional (for production)
 fastapi==0.108.0

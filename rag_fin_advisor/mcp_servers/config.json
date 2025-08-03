@@ -1,0 +1,28 @@
+{
+  "mcpServers": {
+    "financial-rag-document": {
+      "command": "python",
+      "args": ["mcp_servers/document_server.py"],
+      "env": {
+        "PYTHONPATH": ".",
+        "MCP_LOG_LEVEL": "INFO"
+      }
+    },
+    "financial-rag-compliance": {
+      "command": "python", 
+      "args": ["mcp_servers/compliance_server.py"],
+      "env": {
+        "PYTHONPATH": ".",
+        "MCP_LOG_LEVEL": "INFO"
+      }
+    },
+    "financial-rag-query": {
+      "command": "python",
+      "args": ["mcp_servers/query_server.py"],
+      "env": {
+        "PYTHONPATH": ".",
+        "MCP_LOG_LEVEL": "INFO"
+      }
+    }
+  }
+}
