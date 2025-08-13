@@ -1,4 +1,4 @@
-txt# Core Dependencies
+# Core Dependencies
 langchain==0.1.0
 langchain-community==0.1.0
 langchain-core==0.1.0
@@ -32,6 +32,10 @@ pydantic==2.5.0
 
 # MCP Servers
 mcp
+
+# Market Data APIs
+yfinance==0.2.18
+aiohttp==3.9.1
 
 # Optional (for production)
 fastapi==0.108.0

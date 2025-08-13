@@ -21,11 +21,12 @@ from config import (
     MODEL_CONFIG, RETRIEVAL_CONFIG, COMPLIANCE_PATTERNS,
     logger
 )
+from .market_data import IndianMarketDataAPI
 
 class FinancialRAGChain:
     """Main RAG chain for financial Q&A"""
     
-    def __init__(self, streaming: bool = False):
+    def __init__(self, streaming: bool = False, enable_market_data: bool = True):
         # Check API key
         if not OPENAI_API_KEY:
             raise ValueError("OpenAI API key not found. Set it in config/api_key.txt")
@@ -47,6 +48,9 @@ class FinancialRAGChain:
             streaming=streaming,
             callbacks=callbacks
         )
+        
+        # Initialize market data API
+        self.market_data = IndianMarketDataAPI() if enable_market_data else None
         
         # Load vector store
         self.vector_store = self.load_vector_store()
@@ -137,6 +141,85 @@ Answer:"""
         
         return warnings
     
+    def extract_symbols_from_query(self, query: str) -> List[str]:
+        """Extract stock symbols from query"""
+        symbols = []
+        query_upper = query.upper()
+        
+        # Common Indian stock symbols (basic extraction)
+        common_symbols = [
+            "RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "INFY", "HDFC", "ITC", 
+            "SBIN", "BHARTIARTL", "KOTAKBANK", "ASIANPAINT", "MARUTI", 
+            "BAJFINANCE", "HCLTECH", "AXISBANK", "LT", "SUNPHARMA", "TITAN",
+            "NIFTY", "SENSEX", "BANKNIFTY"
+        ]
+        
+        for symbol in common_symbols:
+            if symbol in query_upper:
+                symbols.append(symbol)
+                
+        return symbols
+    
+    def needs_market_data(self, query: str) -> bool:
+        """Check if query needs real-time market data"""
+        market_keywords = [
+            "price", "current", "latest", "today", "now", "real-time", "live",
+            "market", "trading", "volume", "change", "gain", "loss", "index",
+            "nifty", "sensex", "stock", "share", "equity"
+        ]
+        
+        query_lower = query.lower()
+        return any(keyword in query_lower for keyword in market_keywords)
+    
+    async def get_market_context(self, query: str) -> Optional[Dict]:
+        """Get market data context for the query"""
+        if not self.market_data or not self.needs_market_data(query):
+            return None
+            
+        try:
+            context = {}
+            symbols = self.extract_symbols_from_query(query)
+            
+            # Get market status
+            market_status = await self.market_data.get_market_status()
+            context["market_status"] = market_status
+            
+            # Get indices data
+            indices = await self.market_data.get_market_indices()
+            if indices:
+                context["indices"] = indices
+            
+            # Get specific stock data if symbols found
+            if symbols:
+                stock_data = {}
+                for symbol in symbols[:3]:  # Limit to 3 symbols
+                    try:
+                        data = await self.market_data.get_real_time_price(symbol)
+                        if data:
+                            stock_data[symbol] = {
+                                "price": data.price,
+                                "change": data.change,
+                                "change_percent": data.change_percent,
+                                "market_state": data.market_state
+                            }
+                    except Exception as e:
+                        logger.warning(f"Failed to get data for {symbol}: {e}")
+                        
+                if stock_data:
+                    context["stocks"] = stock_data
+            
+            # Get gainers/losers if query asks for market overview
+            if any(word in query.lower() for word in ["gainer", "loser", "market", "overview"]):
+                gainers_losers = await self.market_data.get_top_gainers_losers(5)
+                if gainers_losers:
+                    context["gainers_losers"] = gainers_losers
+                    
+            return context if context else None
+            
+        except Exception as e:
+            logger.error(f"Error getting market context: {e}")
+            return None
+    
     def format_sources(self, source_documents) -> List[Dict]:
         """Format source documents for display"""
         sources = []
@@ -172,12 +255,13 @@ Answer:"""
             f.write(json.dumps(log_entry) + '\n')
     
     def answer(self, query: str, use_cache: bool = True) -> Dict:
-        """Get answer for a query"""
+        """Get answer for a query with market data integration"""
         # Check compliance
         warnings = self.check_compliance(query)
         
-        # Check cache
-        if use_cache and self.query_cache_file.exists():
+        # Check cache (but not for market data queries as they need fresh data)
+        use_cache_for_query = use_cache and not self.needs_market_data(query)
+        if use_cache_for_query and self.query_cache_file.exists():
             try:
                 with open(self.query_cache_file, 'r') as f:
                     cache = json.load(f)
@@ -190,9 +274,22 @@ Answer:"""
                 pass
         
         try:
+            # Get market data context if needed
+            market_context = None
+            if self.market_data and self.needs_market_data(query):
+                logger.info("Fetching market data context...")
+                import asyncio
+                market_context = asyncio.run(self.get_market_context(query))
+            
+            # Enhance query with market data
+            enhanced_query = query
+            if market_context:
+                market_info = self._format_market_context(market_context)
+                enhanced_query = f"{query}\n\nCurrent Market Data:\n{market_info}"
+            
             # Get answer from QA chain
             logger.info(f"Processing query: {query[:100]}...")
-            result = self.qa_chain({"query": query})
+            result = self.qa_chain({"query": enhanced_query})
             
             # Format response
             response = {
@@ -202,8 +299,13 @@ Answer:"""
                 "timestamp": datetime.now().isoformat()
             }
             
-            # Cache response
-            if use_cache:
+            # Add market data to response if available
+            if market_context:
+                response["market_data"] = market_context
+                response["enhanced_with_market_data"] = True
+            
+            # Cache response (but not market data queries)
+            if use_cache_for_query:
                 try:
                     cache = {}
                     if self.query_cache_file.exists():
@@ -235,6 +337,54 @@ Answer:"""
             }
             
             return error_response
+    
+    def _format_market_context(self, market_context: Dict) -> str:
+        """Format market context for LLM"""
+        formatted = []
+        
+        # Market status
+        if "market_status" in market_context:
+            status = market_context["market_status"]
+            formatted.append(f"Market Status: {status.get('market_state', 'unknown').upper()}")
+            if status.get("current_time"):
+                formatted.append(f"Current Time: {status['current_time']}")
+        
+        # Indices
+        if "indices" in market_context:
+            formatted.append("\nMajor Indices:")
+            indices_data = market_context["indices"]
+            if hasattr(indices_data, 'indices'):
+                # Handle NormalizedIndices object
+                for name, data in indices_data.indices.items():
+                    change_sign = "+" if data["change"] >= 0 else ""
+                    formatted.append(f"- {name}: ₹{data['price']:.2f} ({change_sign}{data['change_percent']:.2f}%)")
+            elif isinstance(indices_data, dict) and "indices" in indices_data:
+                # Handle dict format
+                for name, data in indices_data["indices"].items():
+                    change_sign = "+" if data["change"] >= 0 else ""
+                    formatted.append(f"- {name}: ₹{data['price']:.2f} ({change_sign}{data['change_percent']:.2f}%)")
+        
+        # Individual stocks
+        if "stocks" in market_context:
+            formatted.append("\nStock Prices:")
+            for symbol, data in market_context["stocks"].items():
+                change_sign = "+" if data["change"] >= 0 else ""
+                formatted.append(f"- {symbol}: ₹{data['price']:.2f} ({change_sign}{data['change_percent']:.2f}%)")
+        
+        # Gainers/Losers
+        if "gainers_losers" in market_context:
+            gl_data = market_context["gainers_losers"]
+            if gl_data.get("top_gainers"):
+                formatted.append("\nTop Gainers:")
+                for stock in gl_data["top_gainers"][:3]:
+                    formatted.append(f"- {stock['symbol']}: +{stock['change_percent']:.2f}%")
+            
+            if gl_data.get("top_losers"):
+                formatted.append("\nTop Losers:")
+                for stock in gl_data["top_losers"][:3]:
+                    formatted.append(f"- {stock['symbol']}: {stock['change_percent']:.2f}%")
+        
+        return "\n".join(formatted)
     
     def get_similar_queries(self, query: str, k: int = 5) -> List[str]:
         """Get similar queries from history"""
